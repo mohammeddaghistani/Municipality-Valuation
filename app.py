@@ -20,7 +20,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import pydeck as pdk
-import plotly.express as px
+
 from core_valuation import (
     residual_value,
     estimated_rent,
@@ -732,4 +732,5 @@ with tab4:
         st.write(f"- درجة الثقة: **{conf.get('text','')}**")
 
     st.markdown("</div>", unsafe_allow_html=True)
+
 

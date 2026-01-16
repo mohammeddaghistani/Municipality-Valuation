@@ -8,3 +8,5 @@ reportlab
 arabic-reshaper
 python-bidi
 openpyxl
+pillow
+altair

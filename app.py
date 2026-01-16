@@ -5,7 +5,7 @@
 #   maps_engine.py
 #   report_engine.py
 # Files:
-
+#   logo.png
 #   fonts/Cairo-Regular.ttf
 #   fonts/Cairo-Bold.ttf
 # =========================================================
@@ -732,6 +732,3 @@ with tab4:
         st.write(f"- درجة الثقة: **{conf.get('text','')}**")
 
     st.markdown("</div>", unsafe_allow_html=True)
-
-
-

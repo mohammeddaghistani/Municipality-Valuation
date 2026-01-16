@@ -3,6 +3,7 @@ pandas
 numpy
 pydeck
 matplotlib
+plotly
 reportlab
 arabic-reshaper
 python-bidi

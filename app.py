@@ -2,8 +2,9 @@
 # app.py — Municipality Valuation (Modular)
 # Requires:
 #   core_valuation.py
-#   maps_engine.py
 #   report_engine.py
+# Optional (for PDF map image):
+#   maps_engine.py  (make_static_map_image)
 # Files:
 #   logo.png
 #   fonts/Cairo-Regular.ttf
@@ -30,11 +31,13 @@ from core_valuation import (
     recommend_rent_advanced,
     calc_confidence_score,
 )
-from maps_engine import (
-    build_pydeck_layers,
-    make_static_map_image,
-    pydeck_view_state,
-)
+
+# maps_engine is optional (only used for static map image for PDF)
+try:
+    from maps_engine import make_static_map_image
+except Exception:
+    make_static_map_image = None
+
 from report_engine import (
     make_pdf_report,
     make_excel_report,
@@ -202,7 +205,7 @@ def normalize_text(x):
 def fmt_currency(x):
     try:
         return f"{float(x):,.0f} ﷼"
-    except:
+    except Exception:
         return "-"
 
 def build_deal_key(row: dict) -> str:
@@ -232,12 +235,27 @@ def extract_lat_lng(url: str):
         return float(m.group(1)), float(m.group(2))
     return None
 
+def parse_coords(coords_txt: str):
+    if not coords_txt:
+        return None
+    try:
+        parts = [p.strip() for p in coords_txt.split(",")]
+        if len(parts) != 2:
+            return None
+        lat = float(parts[0])
+        lng = float(parts[1])
+        if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+            return None
+        return (lat, lng)
+    except Exception:
+        return None
+
 def load_bank_from_disk() -> pd.DataFrame:
     if os.path.exists(BANK_CSV):
         try:
             df = pd.read_csv(BANK_CSV, encoding="utf-8-sig")
             return ensure_bank_cols(df)
-        except:
+        except Exception:
             pass
     return ensure_bank_cols(pd.DataFrame())
 
@@ -246,7 +264,7 @@ def save_bank_to_disk(df: pd.DataFrame) -> bool:
         df2 = ensure_bank_cols(df)
         df2.to_csv(BANK_CSV, index=False, encoding="utf-8-sig")
         return True
-    except:
+    except Exception:
         return False
 
 def import_deals_from_excel(uploaded_file) -> dict:
@@ -270,10 +288,9 @@ def import_deals_from_excel(uploaded_file) -> dict:
         if c not in df.columns:
             df[c] = None
 
-    bank = st.session_state.data_bank.copy()
-    bank = ensure_bank_cols(bank)
-
+    bank = ensure_bank_cols(st.session_state.data_bank.copy())
     existing = set(bank.apply(lambda r: build_deal_key(r.to_dict()), axis=1).tolist())
+
     added = 0
     skipped = 0
     missing_geo = 0
@@ -323,7 +340,7 @@ def import_deals_from_excel(uploaded_file) -> dict:
         bank = pd.concat([bank, pd.DataFrame(new_rows)], ignore_index=True)
         st.session_state.data_bank = ensure_bank_cols(bank)
 
-    return {"total": len(df), "added": added, "skipped": skipped, "missing_geo": missing_geo}
+    return {"total": int(len(df)), "added": int(added), "skipped": int(skipped), "missing_geo": int(missing_geo)}
 
 def deals_summary(df: pd.DataFrame) -> dict:
     if df is None or df.empty:
@@ -352,6 +369,57 @@ def template_excel_bytes() -> bytes:
     out.seek(0)
     return out.read()
 
+def build_map_layers(site_coords, comps_df: pd.DataFrame):
+    layers = []
+    if site_coords is None:
+        return layers
+
+    site_df = pd.DataFrame([{
+        "lat": float(site_coords[0]),
+        "lng": float(site_coords[1]),
+        "tooltip": "📍 العقار المستهدف"
+    }])
+
+    layers.append(
+        pdk.Layer(
+            "ScatterplotLayer",
+            data=site_df,
+            get_position='[lng, lat]',
+            get_radius=90,
+            pickable=True,
+            opacity=0.95,
+            auto_highlight=True,
+        )
+    )
+
+    if comps_df is not None and isinstance(comps_df, pd.DataFrame) and not comps_df.empty:
+        df = comps_df.copy()
+        if "Latitude" in df.columns and "Longitude" in df.columns:
+            df = df.dropna(subset=["Latitude", "Longitude"]).copy()
+            if not df.empty:
+                df["lat"] = pd.to_numeric(df["Latitude"], errors="coerce")
+                df["lng"] = pd.to_numeric(df["Longitude"], errors="coerce")
+                df = df.dropna(subset=["lat", "lng"]).copy()
+                if not df.empty:
+                    df["tooltip"] = df.apply(
+                        lambda r: f"🏷️ {normalize_text(r.get('اسم المشروع',''))}\n"
+                                  f"📌 {normalize_text(r.get('اسم الحي',''))}\n"
+                                  f"💰 {fmt_currency(r.get('القيمة السنوية للعقد', None))}",
+                        axis=1
+                    )
+                    layers.append(
+                        pdk.Layer(
+                            "ScatterplotLayer",
+                            data=df,
+                            get_position='[lng, lat]',
+                            get_radius=70,
+                            pickable=True,
+                            opacity=0.75,
+                            auto_highlight=True,
+                        )
+                    )
+    return layers
+
 # =========================================================
 # Session init
 # =========================================================
@@ -363,16 +431,20 @@ if st.session_state.get("data_bank") is None or st.session_state.data_bank.empty
 
 if "report_no" not in st.session_state:
     st.session_state.report_no = f"MV-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+
 if "report_date" not in st.session_state:
     st.session_state.report_date = datetime.now().strftime("%Y-%m-%d %H:%M")
 
 # =========================================================
 # Header
 # =========================================================
-st.markdown("<div class='main-header'>"
-            "<h1 style='margin:0; font-weight:900;'>🏛️ منظومة التقييم الاستثماري البلدي</h1>"
-            "<div class='badge'>M. DAGHISTANI | Elite Business Strategy</div>"
-            "</div>", unsafe_allow_html=True)
+st.markdown(
+    "<div class='main-header'>"
+    "<h1 style='margin:0; font-weight:900;'>🏛️ منظومة التقييم الاستثماري البلدي</h1>"
+    "<div class='badge'>M. DAGHISTANI | Elite Business Strategy</div>"
+    "</div>",
+    unsafe_allow_html=True
+)
 
 # =========================================================
 # Tabs
@@ -385,7 +457,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 # =========================================================
-# TAB 1 — Valuation + Analytical Map (Makkah Optimized)
+# TAB 1 — Valuation + Analytical Map (Makkah Default)
 # =========================================================
 with tab1:
     col_a, col_b = st.columns([1, 1.25])
@@ -393,21 +465,22 @@ with tab1:
     with col_a:
         st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
         st.subheader("📍 موقع العقار المستهدف - مكة")
-        coords_txt = st.text_input("Lat,Lng", value="21.4225,39.8262", help="إحداثيات مكة المكرمة")
+        coords_txt = st.text_input(
+            "Lat,Lng",
+            value="21.4225,39.8262",
+            help="القيمة الافتراضية: مكة المكرمة (المسجد الحرام)"
+        )
 
-        coords = None
-        try:
-            parts = [p.strip() for p in coords_txt.split(",")]
-            if len(parts) == 2:
-                coords = (float(parts[0]), float(parts[1]))
-        except:
-            coords = None
+        coords = parse_coords(coords_txt)
 
         st.divider()
         st.subheader("💰 معطيات التقييم (Residual)")
         land_area = st.number_input("المساحة الإجمالية (م2)", value=1000.0, min_value=1.0)
-        target_use = st.selectbox("الاستخدام المستهدف", ["سكني حجاج/فندقي", "تجاري/إداري", "سياحي/ترفيهي", "خدمي/صحي"])
-        
+        target_use = st.selectbox(
+            "الاستخدام المستهدف",
+            ["سكني حجاج/فندقي", "تجاري/إداري", "سياحي/ترفيهي", "خدمي/صحي"]
+        )
+
         total_gdv = st.number_input("القيمة التطويرية النهائية (ريال)", value=50_000_000.0, step=500000.0)
         total_cost = st.number_input("تكاليف الإنشاء والرسوم (ريال)", value=30_000_000.0, step=500000.0)
         p_margin = st.slider("هامش الربح المستهدف (%)", 10, 40, 25) / 100.0
@@ -421,18 +494,32 @@ with tab1:
     with col_b:
         k1, k2, k3 = st.columns(3)
         with k1:
-             st.markdown(f"<div class='metric-card'><div class='metric-label'>القيمة المتبقية للأرض</div><div class='metric-value'><span>{fmt_currency(residual)}</span></div></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='metric-card'><div class='metric-label'>القيمة المتبقية للأرض</div>"
+                f"<div class='metric-value'><span>{fmt_currency(residual)}</span></div></div>",
+                unsafe_allow_html=True
+            )
         with k2:
-             st.markdown(f"<div class='metric-card'><div class='metric-label'>الدخل السنوي المتوقع</div><div class='metric-value'><span>{fmt_currency(rent_est)}</span></div></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='metric-card'><div class='metric-label'>الدخل السنوي المتوقع</div>"
+                f"<div class='metric-value'><span>{fmt_currency(rent_est)}</span></div></div>",
+                unsafe_allow_html=True
+            )
         with k3:
-             st.markdown(f"<div class='metric-card'><div class='metric-label'>سعر المتر الإيجاري</div><div class='metric-value'><span>{rent_per_m2:,.0f} ﷼</span></div></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='metric-card'><div class='metric-label'>سعر المتر الإيجاري</div>"
+                f"<div class='metric-value'><span>{rent_per_m2:,.0f} ﷼</span></div></div>",
+                unsafe_allow_html=True
+            )
 
         st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
         st.subheader("🗺️ الخارطة الاستثمارية - مكة المكرمة")
-        if coords:
-            bank_df = ensure_bank_cols(st.session_state.data_bank)
-            comps_for_map = pd.DataFrame()
-            if not bank_df.empty:
+
+        bank_df = ensure_bank_cols(st.session_state.data_bank)
+
+        comps_for_map = pd.DataFrame()
+        if coords and not bank_df.empty:
+            try:
                 comps_for_map = select_comparable_deals(
                     bank_df=bank_df,
                     site_coords=coords,
@@ -440,24 +527,31 @@ with tab1:
                     top_n=10,
                     min_same_activity=5
                 )
+            except Exception:
+                comps_for_map = pd.DataFrame()
 
-            layers = []
-            if coords:
-                try:
-                    layers = build_pydeck_layers(coords, comps_for_map)
-                except Exception:
-                    layers = build_pydeck_layers(comps_for_map, coords)
+        layers = build_map_layers(coords, comps_for_map)
 
-            view_state = pydeck_view_state(coords[0], coords[1], zoom=13, pitch=45)
+        if coords:
+            view_state = pdk.ViewState(
+                latitude=float(coords[0]),
+                longitude=float(coords[1]),
+                zoom=13,
+                pitch=45
+            )
+
             st.pydeck_chart(
                 pdk.Deck(
                     initial_view_state=view_state,
-                    map_style="mapbox://styles/mapbox/dark-v10",
+                    map_style="carto-darkmatter",
                     layers=layers,
-                    tooltip={"text": "{tooltip}"} if layers else True,
+                    tooltip={"text": "{tooltip}"}
                 ),
                 use_container_width=True
             )
+        else:
+            st.warning("⚠️ صيغة الإحداثيات غير صحيحة. مثال: 21.4225,39.8262")
+
         st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================================
@@ -499,7 +593,7 @@ with tab3:
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("📂 بنك الصفقات المرجعي")
 
-    c1, c2, c3 = st.columns([1,1,1])
+    c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
         if st.button("💾 حفظ البنك", use_container_width=True):
             ok = save_bank_to_disk(st.session_state.data_bank)
@@ -525,7 +619,10 @@ with tab3:
     if up is not None:
         try:
             r = import_deals_from_excel(up)
-            st.success(f"✅ تمت القراءة | الإجمالي: {r['total']} | المضاف: {r['added']} | المكرر: {r['skipped']} | بدون إحداثيات: {r['missing_geo']}")
+            st.success(
+                f"✅ تمت القراءة | الإجمالي: {r['total']} | المضاف: {r['added']} | "
+                f"المكرر: {r['skipped']} | بدون إحداثيات: {r['missing_geo']}"
+            )
         except Exception as e:
             st.error(f"خطأ أثناء الاستيراد: {e}")
 
@@ -546,9 +643,9 @@ with tab3:
         lat = st.number_input("Latitude", value=0.0, format="%.6f")
         lng = st.number_input("Longitude", value=0.0, format="%.6f")
 
-        ok = st.form_submit_button("حفظ الصفقة")
+        ok_add = st.form_submit_button("حفظ الصفقة")
 
-    if ok:
+    if ok_add:
         act = act_main.strip() if not act_sub.strip() else f"{act_main.strip()} - {act_sub.strip()}"
         coords_m = None
         if map_link.strip():
@@ -586,24 +683,21 @@ with tab4:
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("📄 إصدار تقرير (PDF) + تصدير Excel")
 
-    coords_r = None
-    try:
-        parts = [p.strip() for p in coords_txt.split(",")]
-        if len(parts) == 2:
-            coords_r = (float(parts[0]), float(parts[1]))
-    except:
-        coords_r = None
-
+    coords_r = parse_coords(coords_txt)
     bank_df = ensure_bank_cols(st.session_state.data_bank)
+
     comps_df = pd.DataFrame()
     if coords_r and not bank_df.empty:
-        comps_df = select_comparable_deals(
-            bank_df=bank_df,
-            site_coords=coords_r,
-            target_activity=target_use,
-            top_n=10,
-            min_same_activity=5
-        )
+        try:
+            comps_df = select_comparable_deals(
+                bank_df=bank_df,
+                site_coords=coords_r,
+                target_activity=target_use,
+                top_n=10,
+                min_same_activity=5
+            )
+        except Exception:
+            comps_df = pd.DataFrame()
 
     scen_df = build_scenarios(rent_est)
     rent_min = float(scen_df["rent"].min())
@@ -615,10 +709,10 @@ with tab4:
     sens2 = sensitivity_matrix(total_gdv, total_cost, p_margin, cap_rate=cap_rate)
 
     map_ok = False
-    if coords_r and comps_df is not None and not comps_df.empty:
+    if make_static_map_image and coords_r and comps_df is not None and not comps_df.empty:
         try:
-            map_ok = make_static_map_image(comps_df, coords_r, MAP_IMG_PATH)
-        except:
+            map_ok = bool(make_static_map_image(comps_df, coords_r, MAP_IMG_PATH))
+        except Exception:
             map_ok = False
 
     payload = {

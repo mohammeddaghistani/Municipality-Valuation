@@ -1,85 +1,48 @@
-# =========================================================
-# Municipality Valuation – Full Integrated App
-# =========================================================
-
 import os
 import math
 import uuid
-from io import BytesIO
-from datetime import datetime
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import pydeck as pdk
-
 import matplotlib.pyplot as plt
-
+import arabic_reshaper
+from io import BytesIO
+from datetime import datetime
+from bidi.algorithm import get_display
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import cm
-from reportlab.graphics.barcode import qr
-from reportlab.graphics.shapes import Drawing
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-import arabic_reshaper
-from bidi.algorithm import get_display
+# =========================================================
+# 1. الإعدادات العامة والمسارات
+# =========================================================
+st.set_page_config(page_title="Municipality Valuation System", layout="wide")
 
-
-# =========================================================
-# Page config
-# =========================================================
-st.set_page_config(
-    page_title="Municipality Valuation System",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
-
-# =========================================================
-# Paths
-# =========================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-LOGO_PATH = os.path.join(BASE_DIR, "logo.png")
+# تأكد من وجود الخطوط في هذا المسار لتجنب الأخطاء
 FONT_REG = os.path.join(BASE_DIR, "fonts", "Cairo-Regular.ttf")
 FONT_BOLD = os.path.join(BASE_DIR, "fonts", "Cairo-Bold.ttf")
-
+LOGO_PATH = os.path.join(BASE_DIR, "logo.png")
 
 # =========================================================
-# Helpers – Arabic
+# 2. الدوال المساعدة (Helpers)
 # =========================================================
+
 def ar(txt):
-    if txt is None:
-        return ""
-    reshaped = arabic_reshaper.reshape(str(txt))
-    return get_display(reshaped)
-
+    """معالجة النصوص العربية للعرض الصحيح"""
+    if not txt: return ""
+    return get_display(arabic_reshaper.reshape(str(txt)))
 
 def fmt_currency(x):
-    try:
-        return f"{float(x):,.0f} ﷼"
-    except:
-        return "-"
+    try: return f"{float(x):,.0f} ﷼"
+    except: return "-"
 
-
-# =========================================================
-# Fonts
-# =========================================================
-def ensure_pdf_fonts():
-    try:
-        pdfmetrics.registerFont(TTFont("Cairo", FONT_REG))
-        pdfmetrics.registerFont(TTFont("Cairo-Bold", FONT_BOLD))
-        return True
-    except:
-        return False
-
-
-# =========================================================
-# Distance (Haversine)
-# =========================================================
 def haversine_km(lat1, lon1, lat2, lon2):
     R = 6371
     p1, p2 = math.radians(lat1), math.radians(lat2)
@@ -88,203 +51,121 @@ def haversine_km(lat1, lon1, lat2, lon2):
     a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
+def calc_confidence_score(comps_df):
+    if comps_df.empty: return {"percent": 0, "level": "منخفضة", "text": "لا توجد بيانات"}
+    n = len(comps_df)
+    mean_dist = comps_df["المسافة (كم)"].mean()
+    vals = pd.to_numeric(comps_df["القيمة السنوية للعقد"], errors="coerce").dropna()
+    if vals.empty: return None
+    
+    score_n = min(n / 10, 1.0)
+    score_d = max(0, 1 - (mean_dist / 5))
+    iqr = vals.quantile(0.75) - vals.quantile(0.25)
+    score_v = max(0, 1 - (iqr / vals.median() if vals.median() != 0 else 1))
+    
+    pct = int(round((0.4 * score_n + 0.35 * score_d + 0.25 * score_v) * 100))
+    level = "عالية" if pct >= 80 else "متوسطة" if pct >= 60 else "محدودة"
+    return {"percent": pct, "level": level, "text": f"درجة الثقة {pct}% ({level})"}
 
 # =========================================================
-# Session State
+# 3. اختيار الصفقات والتوصية
 # =========================================================
+
+def select_comparable_deals(bank_df, site_coords, target_activity, top_n=10):
+    if bank_df.empty or not site_coords: return pd.DataFrame()
+    lat0, lon0 = site_coords
+    df = bank_df.copy()
+    df["المسافة (كم)"] = df.apply(lambda r: haversine_km(lat0, lon0, float(r["Latitude"]), float(r["Longitude"])), axis=1)
+    
+    # فلترة بسيطة (يمكن تحسينها حسب الحاجة)
+    selected = df.sort_values("المسافة (كم)").head(top_n)
+    return selected
+
+def recommend_rent_advanced(comps_df, scenario_min, scenario_max):
+    if comps_df.empty: return None
+    vals = pd.to_numeric(comps_df["القيمة السنوية للعقد"], errors="coerce").dropna()
+    med = vals.median()
+    low = max(vals.quantile(0.25), scenario_min)
+    high = min(vals.quantile(0.75), scenario_max)
+    
+    return {
+        "low": low, "median": med, "high": high,
+        "text": f"النطاق الموصى به: {fmt_currency(low)} - {fmt_currency(high)}"
+    }
+
+# =========================================================
+# 4. واجهة Streamlit (UI)
+# =========================================================
+
 if "data_bank" not in st.session_state:
-    st.session_state.data_bank = pd.DataFrame(columns=[
-        "رقم العقد", "اسم المشروع", "النشاط", "اسم الحي",
-        "القيمة السنوية للعقد", "Latitude", "Longitude"
+    # بيانات وهمية للتجربة
+    st.session_state.data_bank = pd.DataFrame([
+        {"رقم العقد": "101", "اسم المشروع": "برج السلام", "النشاط": "تجاري", "اسم الحي": "الملقا", "القيمة السنوية للعقد": 1200000, "Latitude": 24.714, "Longitude": 46.676},
+        {"رقم العقد": "102", "اسم المشروع": "مجمع ريادة", "النشاط": "تجاري", "اسم الحي": "النخيل", "القيمة السنوية للعقد": 950000, "Latitude": 24.712, "Longitude": 46.674},
     ])
 
-if "report_no" not in st.session_state:
-    st.session_state.report_no = f"MV-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+st.title("🏛️ منظومة التقييم الاستثماري البلدي")
 
-
-# =========================================================
-# Header
-# =========================================================
-st.image(LOGO_PATH, width=160)
-st.markdown("## 🏛️ منظومة التقييم الاستثماري البلدي")
-st.caption("Decision Support System – Residual Method + Spatial Analysis")
-
-st.divider()
-
-# =========================================================
-# Inputs
-# =========================================================
-c1, c2, c3 = st.columns(3)
-
-with c1:
+with st.sidebar:
+    st.header("إعدادات الموقع")
+    coords_txt = st.text_input("إحداثيات (lat,lon)", "24.7136,46.6753")
     land_area = st.number_input("المساحة (م2)", value=2500)
+    target_use = st.selectbox("الاستخدام", ["تجاري", "إداري", "سياحي"])
 
-with c2:
-    target_use = st.selectbox(
-        "الاستخدام المستهدف",
-        ["تجاري/إداري", "سياحي/ترفيهي", "خدمي/صحي"]
-    )
-
-with c3:
-    coords_txt = st.text_input("إحداثيات الموقع (lat,lon)", "24.7136,46.6753")
-
+# معالجة الإحداثيات
 try:
     lat0, lon0 = [float(x.strip()) for x in coords_txt.split(",")]
     site_coords = (lat0, lon0)
 except:
+    st.error("خطأ في تنسيق الإحداثيات")
     site_coords = None
 
-
-# =========================================================
-# Financials
-# =========================================================
-st.markdown("### 💰 معطيات التقييم")
-
-f1, f2, f3 = st.columns(3)
-
-with f1:
-    gdv = st.number_input("القيمة التطويرية النهائية (GDV)", value=15_000_000)
-
-with f2:
-    cost = st.number_input("إجمالي التكاليف", value=9_000_000)
-
-with f3:
-    margin = st.slider("هامش الربح %", 10, 30, 20) / 100
+# الحسابات المالية (الطريقة المتبقية)
+st.subheader("💰 التحليل المالي")
+col1, col2, col3 = st.columns(3)
+with col1: gdv = st.number_input("القيمة التطويرية (GDV)", value=15_000_000)
+with col2: cost = st.number_input("إجمالي التكاليف", value=9_000_000)
+with col3: margin = st.slider("هامش الربح %", 10, 30, 20) / 100
 
 residual = gdv - (cost + gdv * margin)
 rent_est = max(residual * 0.08, 0)
-rent_m2 = rent_est / land_area if land_area else 0
+rent_min, rent_max = rent_est * 0.9, rent_est * 1.1
 
-st.metric("الإيجار السنوي المقترح", fmt_currency(rent_est))
-st.metric("سعر المتر الإيجاري", f"{rent_m2:,.2f} ﷼ / م2")
+# التحليل المكاني
+comps_df = select_comparable_deals(st.session_state.data_bank, site_coords, target_use)
+rec = recommend_rent_advanced(comps_df, rent_min, rent_max)
+conf = calc_confidence_score(comps_df)
 
-# =========================================================
-# Scenarios
-# =========================================================
-scenarios = pd.DataFrame([
-    {"السيناريو": "محافظ", "Rent": rent_est * 0.9},
-    {"السيناريو": "أساسي", "Rent": rent_est},
-    {"السيناريو": "متفائل", "Rent": rent_est * 1.1},
-])
+# عرض النتائج
+if rec:
+    st.success(f"✅ {rec['text']}")
+    st.info(f"📊 {conf['text']}")
 
-rent_min = scenarios["Rent"].min()
-rent_max = scenarios["Rent"].max()
-
-# =========================================================
-# Comparable deals (dummy example if empty)
-# =========================================================
-if st.session_state.data_bank.empty:
-    st.session_state.data_bank = pd.DataFrame([
-        {"رقم العقد": "A1", "اسم المشروع": "مشروع 1", "النشاط": "تجاري",
-         "اسم الحي": "الملقا", "القيمة السنوية للعقد": 900000,
-         "Latitude": lat0+0.01, "Longitude": lon0+0.01},
-        {"رقم العقد": "A2", "اسم المشروع": "مشروع 2", "النشاط": "تجاري",
-         "اسم الحي": "الياسمين", "القيمة السنوية للعقد": 1_050_000,
-         "Latitude": lat0-0.01, "Longitude": lon0-0.02},
-    ])
-
-bank = st.session_state.data_bank.copy()
-bank["المسافة (كم)"] = bank.apply(
-    lambda r: haversine_km(lat0, lon0, r["Latitude"], r["Longitude"]),
-    axis=1
-)
-
-comps = bank.sort_values("المسافة (كم)").head(10)
+# الخريطة
+st.subheader("🗺️ الخريطة التحليلية")
+if site_coords:
+    view_state = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=14)
+    site_layer = pdk.Layer("ScatterplotLayer", data=[{"lat": lat0, "lon": lon0}], get_position="[lon, lat]", get_radius=100, get_fill_color=[255, 0, 0])
+    comp_layer = pdk.Layer("ScatterplotLayer", data=comps_df, get_position="[Longitude, Latitude]", get_radius=80, get_fill_color=[0, 0, 255])
+    st.pydeck_chart(pdk.Deck(layers=[site_layer, comp_layer], initial_view_state=view_state))
 
 # =========================================================
-# Recommendation
-# =========================================================
-vals = comps["القيمة السنوية للعقد"]
-q1, q3 = vals.quantile(0.25), vals.quantile(0.75)
-rec_low = max(q1, rent_min)
-rec_high = min(q3, rent_max)
-
-confidence = min(95, int(50 + len(comps)*4))
-
-st.success(
-    f"✅ التوصية النهائية: من {fmt_currency(rec_low)} إلى {fmt_currency(rec_high)}"
-)
-st.info(f"📊 درجة الثقة: {confidence}%")
-
-# =========================================================
-# PyDeck Map
-# =========================================================
-st.markdown("### 🗺️ الخريطة التحليلية")
-
-layers = [
-    pdk.Layer(
-        "ScatterplotLayer",
-        data=comps,
-        get_position="[Longitude, Latitude]",
-        get_radius=200,
-        get_fill_color=[0, 140, 255],
-        pickable=True,
-    ),
-    pdk.Layer(
-        "ScatterplotLayer",
-        data=pd.DataFrame([{"Latitude": lat0, "Longitude": lon0}]),
-        get_position="[Longitude, Latitude]",
-        get_radius=300,
-        get_fill_color=[255, 191, 0],
-    )
-]
-
-view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=13, pitch=35)
-
-st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view))
-
-# =========================================================
-# Static map for PDF
-# =========================================================
-MAP_IMG = os.path.join(DATA_DIR, "map.png")
-plt.figure(figsize=(5,5))
-plt.scatter(comps["Longitude"], comps["Latitude"], c="blue", s=80)
-plt.scatter(lon0, lat0, c="gold", s=200, marker="*")
-plt.savefig(MAP_IMG, dpi=200)
-plt.close()
-
-# =========================================================
-# PDF
+# 5. تصدير PDF (مختصر)
 # =========================================================
 def make_pdf():
     buf = BytesIO()
+    pdfmetrics.registerFont(TTFont("Cairo", FONT_REG))
     c = canvas.Canvas(buf, pagesize=A4)
-    ensure_pdf_fonts()
-    w, h = A4
-
-    c.setFont("Cairo-Bold", 18)
-    c.drawRightString(w-2*cm, h-2*cm, ar("تقرير تقييم عقار بلدي"))
-
-    c.setFont("Cairo", 11)
-    c.drawRightString(w-2*cm, h-3*cm, ar(f"رقم التقرير: {st.session_state.report_no}"))
-    c.drawRightString(w-2*cm, h-3.7*cm, ar(f"التاريخ: {datetime.now().strftime('%Y-%m-%d')}"))
-
-    y = h-5*cm
-    for k, v in [
-        ("الاستخدام", target_use),
-        ("الإيجار المقترح", fmt_currency(rent_est)),
-        ("سعر المتر", f"{rent_m2:,.2f}"),
-        ("التوصية", f"{fmt_currency(rec_low)} – {fmt_currency(rec_high)}"),
-        ("درجة الثقة", f"{confidence}%"),
-    ]:
-        c.drawRightString(w-2*cm, y, ar(k))
-        c.drawString(2*cm, y, ar(v))
-        y -= 0.8*cm
-
-    if os.path.exists(MAP_IMG):
-        c.drawImage(MAP_IMG, 2*cm, y-8*cm, w-4*cm, 7*cm)
-
+    # رسم النصوص (استخدم دالة ar للتعريب)
+    c.setFont("Cairo", 14)
+    c.drawRightString(19*cm, 27*cm, ar("تقرير تقييم عقاري"))
+    c.setFont("Cairo", 10)
+    c.drawRightString(19*cm, 26*cm, ar(f"المساحة: {land_area} م2"))
+    c.drawRightString(19*cm, 25*cm, ar(f"التوصية: {rec['text'] if rec else ''}"))
     c.showPage()
     c.save()
-    buf.seek(0)
-    return buf.read()
+    return buf.getvalue()
 
-
-if st.button("📄 تحميل تقرير PDF"):
-    pdf = make_pdf()
-    st.download_button(
-        "⬇️ تنزيل PDF",
-        data=pdf,
-        file_name=f"{st.session_state.report_no}.pdf",
-        mime="application/pdf"
-    )
+if st.button("📄 إصدار تقرير PDF"):
+    pdf_data = make_pdf()
+    st.download_button("تنزيل التقرير", pdf_data, "report.pdf", "application/pdf")

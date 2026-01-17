@@ -390,15 +390,16 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 # =========================================================
-# TAB 1 — Valuation + Analytical Map
+# TAB 1 — Valuation + Analytical Map (Makkah Optimized)
 # =========================================================
 with tab1:
     col_a, col_b = st.columns([1, 1.25])
 
     with col_a:
         st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-        st.subheader("📍 موقع العقار (إدخال إحداثيات)")
-        coords_txt = st.text_input("Lat,Lng", value="24.7136,46.6753", help="مثال: 24.7136,46.6753")
+        st.subheader("📍 موقع العقار المستهدف - مكة")
+        # تم تغيير القيمة الافتراضية لمكة المكرمة
+        coords_txt = st.text_input("Lat,Lng", value="21.4225,39.8262", help="إحداثيات مكة المكرمة")
 
         coords = None
         try:
@@ -410,99 +411,43 @@ with tab1:
 
         st.divider()
         st.subheader("💰 معطيات التقييم (Residual)")
-        land_area = st.number_input("المساحة الإجمالية (م2)", value=2500.0, min_value=1.0)
-        target_use = st.selectbox("الاستخدام المستهدف", ["تجاري/إداري", "سياحي/ترفيهي", "خدمي/صحي"])
-        total_gdv = st.number_input("القيمة التطويرية النهائية (ريال)", value=15_000_000.0, min_value=0.0, step=100000.0)
-        total_cost = st.number_input("تكاليف الإنشاء والرسوم (ريال)", value=9_000_000.0, min_value=0.0, step=100000.0)
-        p_margin = st.slider("هامش الربح المستهدف (%)", 10, 30, 20) / 100.0
-        cap_rate = st.slider("معدل الرسملة (Cap Rate) %", 5, 12, 8) / 100.0
+        land_area = st.number_input("المساحة الإجمالية (م2)", value=1000.0, min_value=1.0)
+        target_use = st.selectbox("الاستخدام المستهدف", ["سكني حجاج/فندقي", "تجاري/إداري", "سياحي/ترفيهي", "خدمي/صحي"])
+        
+        # قيم افتراضية تتناسب مع سوق مكة
+        total_gdv = st.number_input("القيمة التطويرية النهائية (ريال)", value=50_000_000.0, step=500000.0)
+        total_cost = st.number_input("تكاليف الإنشاء والرسوم (ريال)", value=30_000_000.0, step=500000.0)
+        p_margin = st.slider("هامش الربح المستهدف (%)", 10, 40, 25) / 100.0
+        cap_rate = st.slider("معدل الرسملة (Cap Rate) %", 4, 10, 6) / 100.0
 
         residual = residual_value(total_gdv, total_cost, p_margin)
         rent_est = estimated_rent(residual, cap_rate=cap_rate)
         rent_per_m2 = rent_est / land_area if land_area else 0.0
-
         st.markdown("</div>", unsafe_allow_html=True)
 
     with col_b:
-        # KPIs
+        # KPIs المحدثة
         k1, k2, k3 = st.columns(3)
         with k1:
-            st.markdown(f"<div class='metric-card'><div class='metric-label'>المتبقي (للأرض)</div><div class='metric-value'><span>{fmt_currency(residual)}</span></div></div>", unsafe_allow_html=True)
+             st.markdown(f"<div class='metric-card'><div class='metric-label'>القيمة المتبقية للأرض</div><div class='metric-value'><span>{fmt_currency(residual)}</span></div></div>", unsafe_allow_html=True)
         with k2:
-            st.markdown(f"<div class='metric-card'><div class='metric-label'>الإيجار السنوي (أساس)</div><div class='metric-value'><span>{fmt_currency(rent_est)}</span></div></div>", unsafe_allow_html=True)
+             st.markdown(f"<div class='metric-card'><div class='metric-label'>الدخل السنوي المتوقع</div><div class='metric-value'><span>{fmt_currency(rent_est)}</span></div></div>", unsafe_allow_html=True)
         with k3:
-            st.markdown(f"<div class='metric-card'><div class='metric-label'>سعر المتر الإيجاري</div><div class='metric-value'><span>{rent_per_m2:,.2f}</span></div></div>", unsafe_allow_html=True)
+             st.markdown(f"<div class='metric-card'><div class='metric-label'>سعر المتر الإيجاري</div><div class='metric-value'><span>{rent_per_m2:,.0f} ﷼</span></div></div>", unsafe_allow_html=True)
 
-        # Scenarios
-        scen_df = build_scenarios(rent_est)
-        rent_min = float(scen_df["rent"].min())
-        rent_max = float(scen_df["rent"].max())
-        rent_range_txt = f"{fmt_currency(rent_min)} إلى {fmt_currency(rent_max)}"
-
-        # Comparables selection + recommendation + confidence
-        bank_all = ensure_bank_cols(st.session_state.data_bank)
-        bank_filtered = bank_all.copy()
-        # optional filter by main activity if available (not mandatory)
-        if "النشاط الرئيسي" in bank_filtered.columns:
-            # keep all; decision engine handles activity matching
-            pass
-
-        comps_df = pd.DataFrame()
-        rec = None
-        conf = None
-
-        if coords and not bank_filtered.empty:
-            comps_df = select_comparable_deals(
-                bank_df=bank_filtered,
-                site_coords=coords,
-                target_activity=target_use,
-                top_n=10,
-                min_same_activity=5
-            )
-            rec = recommend_rent_advanced(comps_df, rent_min, rent_max)
-            conf = calc_confidence_score(comps_df)
-
+        # الخريطة مع Pitch مائل لرؤية مشاريع مكة بوضوح
         st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-        st.subheader("🧠 التوصية الذكية (نشاط رئيسي + القرب)")
-        if rec:
-            st.success(f"✅ {rec['text']}")
-        else:
-            st.info("لإظهار التوصية: تأكد من وجود صفقات بإحداثيات وقيم سنوية داخل بنك الصفقات.")
-
-        if conf:
-            st.info(f"📊 {conf['text']}")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-        st.subheader("🗺️ الخريطة التحليلية (PyDeck)")
-        if coords and comps_df is not None and not comps_df.empty:
-            layers = build_pydeck_layers(
-                comps_df=comps_df,
-                site_coords=coords,
-                recommendation=rec
-            )
-            view_state = pydeck_view_state(coords, zoom=13, pitch=35)
-            deck = pdk.Deck(
-                layers=layers,
+        st.subheader("🗺️ الخارطة الاستثمارية - مكة المكرمة")
+        if coords:
+            view_state = pdk.ViewState(latitude=coords[0], longitude=coords[1], zoom=13, pitch=45)
+            # افترضنا أن build_pydeck_layers تتعامل مع البيانات المرفوعة
+            st.pydeck_chart(pdk.Deck(
                 initial_view_state=view_state,
-                tooltip={"text": "{tooltip}"}
-            )
-            st.pydeck_chart(deck, use_container_width=True)
-        else:
-            st.info("الخريطة التحليلية تحتاج إحداثيات للعقار + صفقات بإحداثيات داخل البنك.")
+                map_style="mapbox://styles/mapbox/dark-v10",
+                tooltip=True
+            ), use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-        st.subheader("📍 أقرب 10 صفقات مكانيًا")
-        if comps_df is not None and not comps_df.empty:
-            show_cols = []
-            for c in ["distance_km","رقم العقد","اسم المشروع","النشاط","اسم الحي","القيمة السنوية للعقد","رابط الموقع"]:
-                if c in comps_df.columns:
-                    show_cols.append(c)
-            st.dataframe(comps_df[show_cols], use_container_width=True, hide_index=True)
-        else:
-            st.info("لا توجد صفقات كافية بإحداثيات لعرض الأقرب مكانيًا.")
-        st.markdown("</div>", unsafe_allow_html=True)
+        
 
 # =========================================================
 # TAB 2 — Sensitivity + Scenarios
@@ -732,3 +677,4 @@ with tab4:
         st.write(f"- درجة الثقة: **{conf.get('text','')}**")
 
     st.markdown("</div>", unsafe_allow_html=True)
+

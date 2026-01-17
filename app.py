@@ -430,7 +430,6 @@ with tab1:
         st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
         st.subheader("🗺️ الخارطة الاستثمارية - مكة المكرمة")
         if coords:
-            # OPTIONAL: Build layers if you have deals in bank
             bank_df = ensure_bank_cols(st.session_state.data_bank)
             comps_for_map = pd.DataFrame()
             if not bank_df.empty:
@@ -441,14 +440,24 @@ with tab1:
                     top_n=10,
                     min_same_activity=5
                 )
-            layers = build_pydeck_layers(coords, comps_for_map) if coords else []
+
+            layers = []
+            if coords:
+                try:
+                    layers = build_pydeck_layers(coords, comps_for_map)
+                except Exception:
+                    layers = build_pydeck_layers(comps_for_map, coords)
+
             view_state = pydeck_view_state(coords[0], coords[1], zoom=13, pitch=45)
-            st.pydeck_chart(pdk.Deck(
-                initial_view_state=view_state,
-                map_style="mapbox://styles/mapbox/dark-v10",
-                layers=layers,
-                tooltip={"text": "{tooltip}"} if layers else True
-            ), use_container_width=True)
+            st.pydeck_chart(
+                pdk.Deck(
+                    initial_view_state=view_state,
+                    map_style="mapbox://styles/mapbox/dark-v10",
+                    layers=layers,
+                    tooltip={"text": "{tooltip}"} if layers else True,
+                ),
+                use_container_width=True
+            )
         st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================================

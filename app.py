@@ -471,15 +471,10 @@ with tab2:
     )
 
     st.dataframe(
-    scen_df.rename(columns={
-        "scenario": "السيناريو",
-        "rent": "الإيجار"
-    }),
+    scen_df,
     use_container_width=True,
     hide_index=True
 )
-
-
 # =========================================================
 # TAB 3 — Deals Bank (Excel import + manual add + save)
 # =========================================================
@@ -682,5 +677,6 @@ with tab4:
         st.write(f"- درجة الثقة: **{conf.get('text','')}**")
 
     st.markdown("</div>", unsafe_allow_html=True)
+
 
 
